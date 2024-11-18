@@ -1,0 +1,33 @@
+# check https://nfpm.goreleaser.com/configuration for detailed usage
+name: "${NAME}"
+arch: "${GOARCH}"
+platform: "${GOOS}"
+version: "${VERSION}"
+epoch: 1
+section: default
+provides:
+- ${NAME}
+maintainer: "Andrea Funtò <dihedron.dev@gmail.com>"
+description: |
+  FastBank is a simple test application to 
+  experiment with fast transaction processing 
+  across a distributed cluster of nodes with 
+  persistent, transactional local storage.
+  The objective is to benchmark how fast one
+  such processor can work while maintaining
+  strong consistency guarantees using simple
+  out of the box technologies.
+vendor: "Andrea Funtò"
+homepage: "https://github.com/dihedron"
+license: "MIT"
+contents:
+- src: ./dist/${PLATFORM}/${NAME}
+  dst: /usr/local/bin/${NAME}
+  expand: true
+- src: ./${NAME}.conf
+  dst: /etc/${NAME}.conf
+  expand: true
+#scripts:
+#  postinstall: ./postinstall.sh  
+rpm:
+  packager: "Andrea Funtò <dihedron.dev@gmail.com>"
