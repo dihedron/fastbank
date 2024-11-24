@@ -3,50 +3,126 @@ package main
 import (
 	"context"
 	"fmt"
+	"log/slog"
 	"os"
 	"os/signal"
 	"sync"
 	"syscall"
 )
 
-func sender(ctx context.Context, wg *sync.WaitGroup, messages chan<- string) {
+func producer(ctx context.Context, wg *sync.WaitGroup, messages chan<- any) {
 	defer wg.Done()
-	// Producer
-	for i := 0; i < 1000; i++ {
-		messages <- fmt.Sprintf("Message %d", i)
-	}
-	close(messages)
-}
 
-func batcher(ctx context.Context, wg *sync.WaitGroup, messages <-chan string, batches chan<- []string) {
-	defer wg.Done()
-	// Batcher
-	batch := make([]string, 0, 50)
-	for msg := range messages {
-		batch = append(batch, msg)
-		if len(batch) == 50 {
-			batches <- batch
-			batch = make([]string, 0, 50)
+	// Producer
+	i := 0
+loop:
+	for {
+		select {
+		case <-ctx.Done():
+			slog.Debug("producer: context closed")
+			break loop
+		default:
+			select {
+			case messages <- i:
+				// message sent
+				//time.Sleep(time.Duration(int64(rand.Intn(10)) * 10 * int64(time.Millisecond)))
+				i++
+			default:
+				// message dropped
+				//slog.Debug("producer: messages dropped", "message", i)
+			}
 		}
 	}
-	if len(batch) > 0 {
-		batches <- batch
-	}
-	close(batches)
+	slog.Debug("producer: closing messages channel")
+	close(messages)
+	slog.Debug("producer: exit")
 }
 
-func receiver(ctx context.Context, wg *sync.WaitGroup, batches <-chan []string) {
+func batcher(ctx context.Context, wg *sync.WaitGroup, size int, messages <-chan any, batches chan<- []any) {
 	defer wg.Done()
-	// Consumer
-	for batch := range batches {
-		fmt.Println(batch)
+	// Batcher
+	batch := make([]any, 0, size)
+loop:
+	for {
+		select {
+		case msg, ok := <-messages:
+			if !ok {
+				slog.Debug("batcher: messages channel closed")
+				messages = nil
+				break loop
+			}
+			batch = append(batch, msg)
+			if len(batch) == size {
+				select {
+				case batches <- batch:
+					// message sent
+				default:
+					// message dropped
+				}
+				batch = make([]any, 0, size)
+			}
+		case <-ctx.Done():
+			slog.Debug("batcher: context closed")
+			break loop
+		}
 	}
+
+	if len(batch) > 0 {
+		select {
+		case batches <- batch:
+			// message sent
+		default:
+			// message dropped
+		}
+	}
+	slog.Debug("batcher: closing batches channel")
+	close(batches)
+	slog.Debug("batcher: exit")
 }
 
+func consumer(ctx context.Context, wg *sync.WaitGroup, batches <-chan []any) {
+	last := 0
+	defer wg.Done()
+loop:
+	for {
+		select {
+		case <-ctx.Done():
+			slog.Debug("consumer: context closed")
+			break loop
+		case batch, ok := <-batches:
+			if !ok {
+				slog.Debug("consumer: batches channel closed")
+				break loop
+			}
+
+			for _, msg := range batch {
+				if i, ok := msg.(int); ok {
+					if i > last+1 {
+						fmt.Printf("got %d, expected %d\n", i, last+1)
+					}
+					last = i
+					if i%1_000_000 == 0 {
+						fmt.Printf("%d\n", i)
+					}
+				}
+				// fmt.Print(". ")
+			}
+		}
+	}
+	// Consumer
+	// for batch := range batches {
+	// 	for range batch {
+	// 		fmt.Print(". ")
+	// 	}
+	// }
+	slog.Debug("consumer: exit")
+}
+
+// kill -9 $(ps -ef | grep fastbank | grep dist | awk '{print $2}')
 func main() {
 	// Create channels
-	messages := make(chan string)
-	batches := make(chan []string)
+	messages := make(chan any, 100)
+	batches := make(chan []any, 100)
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGHUP, syscall.SIGINT, syscall.SIGTERM, syscall.SIGQUIT)
 	defer stop()
@@ -55,14 +131,31 @@ func main() {
 	var wg sync.WaitGroup
 	wg.Add(3)
 
-	go sender(ctx, &wg, messages)
+	go producer(ctx, &wg, messages)
 
-	go batcher(ctx, &wg, messages, batches)
+	go batcher(ctx, &wg, 2000, messages, batches)
 
-	go receiver(ctx, &wg, batches)
+	go consumer(ctx, &wg, batches)
 
 	wg.Wait()
 }
+
+// works:
+// time=2024-11-19T18:09:45.462+01:00 level=DEBUG source=/data/workspaces/gomods/fastbank/main.go:22 msg="producer: context closed"
+// time=2024-11-19T18:09:45.462+01:00 level=DEBUG source=/data/workspaces/gomods/fastbank/main.go:39 msg="producer: closing messages channel"
+// time=2024-11-19T18:09:45.462+01:00 level=DEBUG source=/data/workspaces/gomods/fastbank/main.go:63 msg="batcher: context closed"
+// time=2024-11-19T18:09:45.462+01:00 level=DEBUG source=/data/workspaces/gomods/fastbank/main.go:41 msg="producer: exit"
+// time=2024-11-19T18:09:45.462+01:00 level=DEBUG source=/data/workspaces/gomods/fastbank/main.go:83 msg="batcher: closing batches channel"
+// time=2024-11-19T18:09:45.462+01:00 level=DEBUG source=/data/workspaces/gomods/fastbank/main.go:94 msg="consumer: context closed"
+// time=2024-11-19T18:09:45.462+01:00 level=DEBUG source=/data/workspaces/gomods/fastbank/main.go:85 msg="batcher: exit"
+// time=2024-11-19T18:09:45.462+01:00 level=DEBUG source=/data/workspaces/gomods/fastbank/main.go:112 msg="consumer: exit"
+
+// doesn't work:
+// time=2024-11-19T18:10:14.838+01:00 level=DEBUG source=/data/workspaces/gomods/fastbank/main.go:94 msg="consumer: context closed"
+// time=2024-11-19T18:10:14.838+01:00 level=DEBUG source=/data/workspaces/gomods/fastbank/main.go:112 msg="consumer: exit"
+// time=2024-11-19T18:10:14.838+01:00 level=DEBUG source=/data/workspaces/gomods/fastbank/main.go:22 msg="producer: context closed"
+// time=2024-11-19T18:10:14.838+01:00 level=DEBUG source=/data/workspaces/gomods/fastbank/main.go:39 msg="producer: closing messages channel"
+// time=2024-11-19T18:10:14.838+01:00 level=DEBUG source=/data/workspaces/gomods/fastbank/main.go:41 msg="producer: exit"
 
 /*
 func sendMessages(ctx context.Context, wg *sync.WaitGroup, in chan<- any) {
