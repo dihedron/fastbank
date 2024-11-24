@@ -24,9 +24,9 @@ contents:
 - src: ./dist/${PLATFORM}/${NAME}
   dst: /usr/local/bin/${NAME}
   expand: true
-- src: ./${NAME}.conf
-  dst: /etc/${NAME}.conf
-  expand: true
+#- src: ./${NAME}.conf
+#  dst: /etc/${NAME}.conf
+#  expand: true
 #scripts:
 #  postinstall: ./postinstall.sh  
 rpm:
